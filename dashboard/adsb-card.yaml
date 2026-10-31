@@ -1,0 +1,29 @@
+# ha-adsb-card – karta Markdown
+# Pulpit -> Edytuj -> Dodaj kartę -> Ręczna (YAML) -> wklej całość.
+type: markdown
+title: ✈️ Samoloty w zasięgu
+content: |
+  {# ----- USTAWIENIA KARTY ----- #}
+  {% set czujnik  = 'sensor.ads_b_samoloty' %}
+  {% set slysz_km = 5 %}      {# 🔊 do tylu km w poziomie... #}
+  {% set slysz_ft = 8500 %}   {# ...i poniżej tylu stóp #}
+  {# ---------------------------- #}
+  {% set dane  = state_attr(czujnik, 'dane') or {} %}
+  {% set lista = dane.lista | default([]) %}
+  {% if states(czujnik) in ['unavailable', 'unknown'] %}
+  ⚠️ Brak danych z odbiornika – sprawdź adres w `rest_command.adsb_pobierz`.
+  {% else %}
+  **Odbierane: {{ states(czujnik) }}** · z pozycją: {{ dane.z_pozycja | default(0) }} · najdalej: {{ dane.najdalej_km | default(0) }} km
+
+  | | Lot | Typ | Wys. | Odl. |
+  |:-:|:--|:--|--:|--:|
+  {% for a in lista -%}
+  {%- if a.sqk in ['7500', '7600', '7700'] -%}{%- set ikona = '🚨' -%}
+  {%- elif a.mil == 1 -%}{%- set ikona = '🪖' -%}
+  {%- elif a.km <= slysz_km and 0 < a.ft <= slysz_ft -%}{%- set ikona = '🔊' -%}
+  {%- else -%}{%- set ikona = '✈️' -%}{%- endif -%}
+  | {{ ikona }} | [{{ a.lot }}](https://globe.adsb.fi/?icao={{ a.hex }}) | {{ a.typ or '–' }} | {{ ((a.ft * 0.3048) | round(-1) | int ~ ' m') if a.ft > 0 else 'ziemia' }} | {{ a.km | round(0) | int }} km |
+  {% endfor %}
+
+  <sub>🚨 kod alarmowy · 🪖 wojskowy · 🔊 prawdopodobnie słyszalny</sub>
+  {% endif %}

@@ -1,0 +1,78 @@
+# =============================================================================
+# ha-adsb-card – pakiet Home Assistant
+# Samoloty w zasięgu własnego odbiornika ADS-B.
+#
+# Obsługiwane źródła danych (format rozpoznawany automatycznie):
+#   - readsb / tar1090 / dump1090-fa / dump1090-mutability:  .../data/aircraft.json
+#     (np. ADS-B.im, PiAware/SkyAware, ultrafeeder)
+#   - fr24feed (obraz Pi24 Flightradar24):  http://ADRES:8754/flights.json
+#
+# Wymagania: Home Assistant 2024.10 lub nowszy,
+# lokalizacja domu w HA ustawiona możliwie blisko anteny (z niej liczona jest odległość).
+# =============================================================================
+
+rest_command:
+  adsb_pobierz:
+    # ZMIEŃ: adres danych Twojego odbiornika, np.:
+    #   http://192.168.1.50:8080/data/aircraft.json   (ADS-B.im / tar1090)
+    #   http://192.168.1.50:8754/flights.json         (Pi24 / fr24feed)
+    url: "http://ADRES_ODBIORNIKA:8080/data/aircraft.json"
+    method: GET
+    timeout: 10
+
+template:
+  - triggers:
+      - trigger: time_pattern
+        seconds: "/15"
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: rest_command.adsb_pobierz
+        response_variable: odp
+        continue_on_error: true
+    sensor:
+      - name: ADS-B samoloty
+        unique_id: adsb_samoloty
+        icon: mdi:airplane
+        unit_of_measurement: samoloty
+        state_class: measurement
+        availability: "{{ odp is defined and odp.status == 200 }}"
+        state: >
+          {% set d = odp.content if odp.content is mapping else (odp.content | from_json) %}
+          {% if 'aircraft' in d %}{{ d.aircraft | count }}
+          {% else %}{{ d.values() | select('sequence') | reject('string') | list | count }}{% endif %}
+        attributes:
+          # Słownik: z_pozycja, najdalej_km, lista (najbliższe samoloty, posortowane po odległości)
+          dane: >
+            {% set limit = 15 %}
+            {% set d = odp.content if odp.content is mapping else (odp.content | from_json) %}
+            {% set ns = namespace(l=[]) %}
+            {% if 'aircraft' in d %}
+              {# readsb / tar1090 / dump1090 #}
+              {% for a in d.aircraft if a.lat is defined and a.lon is defined %}
+                {% set ns.l = ns.l + [dict(
+                    hex = a.hex | lower,
+                    lot = (a.flight | default('') | trim) or a.r | default('') or a.hex | upper,
+                    typ = a.t | default(''),
+                    ft  = (a.alt_baro if a.alt_baro is number else 0) | int(0),
+                    km  = distance(a.lat, a.lon) | round(1),
+                    sqk = a.squawk | default('') | string,
+                    mil = 1 if (a.dbFlags | default(0) | int(0)) % 2 == 1 else 0)] %}
+              {% endfor %}
+            {% else %}
+              {# fr24feed flights.json: [hex, lat, lon, kurs, wys_ft, predkosc, squawk, ..., znak (16)] #}
+              {% for k, e in d.items() if e is sequence and e is not string and e | count > 16 and e[1] and e[2] %}
+                {% set ns.l = ns.l + [dict(
+                    hex = e[0] | string | lower,
+                    lot = (e[16] | default('', true) | string | trim) or e[0] | string | upper,
+                    typ = '',
+                    ft  = e[4] | int(0),
+                    km  = distance(e[1], e[2]) | round(1),
+                    sqk = e[6] | default('', true) | string,
+                    mil = 0)] %}
+              {% endfor %}
+            {% endif %}
+            {% set l = ns.l | sort(attribute='km') %}
+            {{ dict(z_pozycja = l | count,
+                    najdalej_km = (l | map(attribute='km') | max | round(0) | int) if l else 0,
+                    lista = l[:limit]) }}
